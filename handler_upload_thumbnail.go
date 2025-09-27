@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/auth"
 	"github.com/google/uuid"
@@ -56,7 +57,7 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	if mediaType != "image/jpeg" && mediaType != "image/png" {
-		respondWithError(w, http.StatusBadRequest, "Invalid Content-Type", err)
+		respondWithError(w, http.StatusBadRequest, "Invalid Content-Type", nil)
 		return
 	}
 
@@ -66,24 +67,19 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	if userID != video.UserID {
-		respondWithError(w, http.StatusUnauthorized, "User not video owner", err)
+		respondWithError(w, http.StatusUnauthorized, "User not video owner", nil)
 		return
 	}
 
-	ext, err := mime.ExtensionsByType(mediaType)
-	if err != nil {
-		respondWithError(w, http.StatusInternalServerError, "Unable to retrieve extension", err)
-		return
-	}
-
-	// create a base64 encoded random string for file name in filesystem
+	// create a 32-byte base64 encoded file name
 	src := make([]byte, 32)
 	_, err = rand.Read(src)
 	if err != nil {
 		panic("failed to generate random bytes")
 	}
 	dst := base64.RawURLEncoding.EncodeToString(src)
-	videoFilepath := filepath.Join(cfg.assetsRoot, dst+ext[0])
+	ext := "." + strings.Split(mediaType, "/")[1]
+	videoFilepath := filepath.Join(cfg.assetsRoot, dst+ext)
 
 	osFile, err := os.Create(videoFilepath)
 	if err != nil {
@@ -98,8 +94,8 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	thumbnailURL := fmt.Sprintf("http://localhost:%s/assets/%s%s", cfg.port, dst, ext[0])
-	video.ThumbnailURL = &thumbnailURL
+	url := fmt.Sprintf("http://localhost:%s/assets/%s%s", cfg.port, dst, ext)
+	video.ThumbnailURL = &url
 
 	err = cfg.db.UpdateVideo(video)
 	if err != nil {
