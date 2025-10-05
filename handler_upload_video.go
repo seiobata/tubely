@@ -1,13 +1,19 @@
 package main
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"math"
 	"mime"
 	"net/http"
 	"os"
+	"os/exec"
+	"path/filepath"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -91,8 +97,23 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 	if err != nil {
 		panic("failed to generate random bytes")
 	}
-	dst := hex.EncodeToString(src)
-	key := dst + ".mp4"
+	dst := hex.EncodeToString(src) + ".mp4"
+
+	// prepend aspect ratio to key
+	aspectRatio, err := getVideoAspectRatio(osFile.Name())
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Problem finding aspect ratio", err)
+		return
+	}
+
+	prefix := "other"
+	switch aspectRatio {
+	case "16:9":
+		prefix = "landscape"
+	case "9:16":
+		prefix = "portrait"
+	}
+	key := filepath.Join(prefix, dst)
 
 	// upload to S3 bucket
 	_, err = cfg.s3Client.PutObject(r.Context(), &s3.PutObjectInput{
@@ -116,4 +137,55 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 	}
 
 	respondWithJSON(w, http.StatusOK, video)
+}
+
+func getVideoAspectRatio(filePath string) (string, error) {
+	type parameters struct {
+		Streams []struct {
+			Width  int `json:"width"`
+			Height int `json:"height"`
+		} `json:"streams"`
+	}
+
+	cmd := exec.Command("ffprobe",
+		"-v", "error",
+		"-print_format", "json",
+		"-show_streams", filePath,
+	)
+	var stdout bytes.Buffer
+	cmd.Stdout = &stdout
+
+	err := cmd.Run()
+	if err != nil {
+		return "", err
+	}
+
+	var params parameters
+	err = json.Unmarshal(stdout.Bytes(), &params)
+	if err != nil {
+		return "", err
+	}
+
+	if len(params.Streams) == 0 {
+		return "", errors.New("no valid video streams")
+	}
+
+	width := params.Streams[0].Width
+	height := params.Streams[0].Height
+	ratio := float64(width) / float64(height)
+
+	const (
+		r16x9 = 16.0 / 9.0
+		r9x16 = 9.0 / 16.0
+		eps   = 0.01
+	)
+
+	switch {
+	case math.Abs(ratio-r16x9) <= eps:
+		return "16:9", nil
+	case math.Abs(ratio-r9x16) <= eps:
+		return "9:16", nil
+	default:
+		return "other", nil
+	}
 }
